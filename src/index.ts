@@ -3,20 +3,22 @@ import { DecodedLogEvent, ExchangeEvents, LogFillContractEventArgs, ZeroEx } fro
 import { HttpClient } from '@0xproject/connect';
 import { getOrderHashHex } from '@0xproject/order-utils';
 import {
-    BlockParamLiteral,
-    DoneCallback,
-    OrderState,
-    OrderStateInvalid,
-    OrderStateValid,
-    SignedOrder,
+BlockParamLiteral,
+DoneCallback,
+OrderState,
+OrderStateInvalid,
+OrderStateValid,
+SignedOrder,
 } from '@0xproject/types';
-import { logUtils } from '@0xproject/utils';
+import { BigNumber, logUtils } from '@0xproject/utils';
 import { Web3Wrapper } from '@0xproject/web3-wrapper';
 import * as _ from 'lodash';
 import Web3ProviderEngine = require('web3-provider-engine');
 import RPCSubprovider = require('web3-provider-engine/subproviders/rpc');
 
 import { OrderWatcher } from '../node_modules/@0xproject/order-watcher';
+const FIREBASE_CFG = { 'databaseURL': 'https://dextroid-b1ec1.firebaseio.com', 'apiKey': 'AIzaSyB2O7ynTcoPdznmhe5huHIhCbjfzcB2LKs', authDomain: 'dextroid-b1ec1.firebaseapp.com', projectId: 'dextroid-b1ec1' };
+const MAX_ORDERS = 1000;
 
 async function mainAsync() {
     let zeroEx: ZeroEx;
@@ -73,26 +75,41 @@ async function mainAsync() {
         }
     });
 
-    // Get orders from ERCDEX on interval and dump into OrderWatcher
-    const intervalMs = 10000; // 10 sec
-    const client = new HttpClient('https://api.ercdex.com/api/standard/1/v0');
-    setInterval(() => {
-        const numPagesToFetch = 5;
-        _.times(numPagesToFetch, async (n: number) => {
-            const orders = await client.getOrdersAsync({
-                page: n + 1,
-                perPage: 100,
-            });
-            _.each(orders, (order: SignedOrder) => {
-                const orderHash = getOrderHashHex(order);
+    const admin = require('firebase-admin');
+    const serviceAccount = require('../src/firebase-credentials.json');
+    const app = admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+        databaseURL: 'https://dextroid-b1ec1.firebaseio.com',
+    });
+    const db = app.firestore()
+    const orders = {}
+    db.collection('orders')
+        .where('status', '==', 'available')
+        .where('makerTokenSymbol', '==', 'ZRX')
+        .where('source', '==', null)
+        .orderBy('createdAt', 'desc')
+        .limit(MAX_ORDERS)
+        // @ts-ignore
+        .onSnapshot(querySnapshot => {
+            // @ts-ignore
+            querySnapshot.forEach(doc => {
+                const orderHash = doc.id
+                const signedOrder: SignedOrder = doc.data().signedOrder;
+                signedOrder.expirationUnixTimestampSec = new BigNumber(
+                    signedOrder.expirationUnixTimestampSec,
+                );
+                signedOrder.makerFee = new BigNumber(signedOrder.makerFee);
+                signedOrder.makerTokenAmount = new BigNumber(signedOrder.makerTokenAmount);
+                signedOrder.takerFee = new BigNumber(signedOrder.takerFee);
+                signedOrder.takerTokenAmount = new BigNumber(signedOrder.takerTokenAmount);
+
                 if (_.isUndefined(seenOrders[orderHash])) {
-                    orderWatcher.addOrder(order);
+                    orderWatcher.addOrder(signedOrder);
                     seenOrders[orderHash] = true;
                     console.log(`Added order to watcher: ${orderHash}`);
                 }
             });
         });
-    }, intervalMs);
 }
 
 mainAsync();
